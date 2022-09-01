@@ -1,7 +1,7 @@
-
-mod ast;
+use std::rc::Rc;
 
 #[derive(PartialEq)]
+#[derive(Clone, Copy)]
 enum OpType {
     INTEGER,
     PLUS,
@@ -13,11 +13,68 @@ enum OpType {
     EOF,
 }
 
+trait AstNode {
+    fn get_op_type(&self) -> OpType;
+    // not sure return type
+    fn get_left(&self) -> Option<Rc<dyn AstNode>> {
+        None
+    }
+    fn get_right(&self) -> Option<Rc<dyn AstNode>> {
+        None
+    }
+    fn get_value(&self) -> Option<i32> {
+        None
+    }
+}
+
+struct BinOp {
+    op_type: OpType,
+    left: Rc<dyn AstNode>,
+    right:Rc<dyn AstNode>,
+}
+impl AstNode for BinOp {
+    fn get_op_type(&self) -> OpType {
+        self.op_type 
+    }
+    fn get_left(&self) -> Option<Rc<dyn AstNode>> {
+        Some(self.left.clone())
+    }
+    fn get_right(&self) -> Option<Rc<dyn AstNode>> {
+        Some(self.right.clone())
+    }
+}
+impl BinOp {
+    fn new(op_type: OpType, left: Rc<dyn AstNode>, right: Rc<dyn AstNode>) ->BinOp {
+        BinOp { op_type, left, right }
+    }
+}
+
+struct Num {
+    op_type: OpType,
+    value: i32,
+}
+impl AstNode for Num {
+    fn get_op_type(&self) -> OpType {
+        self.op_type 
+    }
+    fn get_value(&self) -> Option<i32> {
+        Some(self.value)
+    }
+}
+impl Num {
+    fn new(op_type: OpType, value: i32) -> Num {
+        Num {
+            value,
+            op_type,
+        }
+    }
+}
+
+
 struct Token {
     op_type: OpType,
     value: String,
 }
-
 impl Token {
     fn new(op_type: OpType, value: &str) -> Token {
         Token {
@@ -106,14 +163,14 @@ impl Lexer {
     }
 }
 
-struct Interpreter {
+struct Parser {
     lexer: Lexer,
     current_token: Token,
 }
 
-impl Interpreter {
-    fn new(mut lexer: Lexer) -> Interpreter {
-        Interpreter {
+impl Parser {
+    fn new(mut lexer: Lexer) -> Parser {
+        Parser {
             current_token: lexer.get_next_token(),
             lexer
         }
@@ -127,12 +184,11 @@ impl Interpreter {
         }
         // println!("eat: new current token {}", self.current_token.value);
     }
-    fn factor(&mut self) -> i32 {
+    fn factor(&mut self) -> Rc<dyn AstNode> {
         match self.current_token.op_type {
         OpType::INTEGER => {
-            let res = self.current_token.value.parse::<i32>().unwrap();
             self.eat(OpType::INTEGER);
-            return res;
+            Rc::new(Num::new(self.current_token.op_type, self.current_token.value.parse::<i32>().unwrap()))
         },
         OpType::LPAREN => {
             self.eat(OpType::LPAREN);
@@ -143,54 +199,76 @@ impl Interpreter {
         _ => panic!("syntax error")
         }
     }
-    fn term(&mut self) -> i32 {
-        let mut res = self.factor();
+    fn term(&mut self) -> Rc<dyn AstNode> {
+        let mut node = self.factor();
         while self.current_token.op_type == OpType::MUL ||
             self.current_token.op_type == OpType::DIV {
+
             match self.current_token.op_type {
-            OpType::MUL => {
-                self.eat(OpType::MUL);
-                res *= self.factor();
-            },
-            OpType::DIV => {
-                self.eat(OpType::DIV);
-                res /= self.factor();
+                OpType::MUL => {
+                    self.eat(OpType::MUL);
+                },
+                OpType::DIV => {
+                    self.eat(OpType::DIV);
+                }
+                _ => ()
             }
-            _ => ()
-            }
+            let op_type = self.current_token.op_type;
+            // we construct the tree from bottom to top
+            node = Rc::new(BinOp::new(op_type, node, self.factor()));
         }
-        res
+        node
     }
-    fn expr(&mut self) -> i32 {
-        let mut res = self.term();
+    fn expr(&mut self) -> Rc<dyn AstNode> {
+        let mut node = self.term();
         while self.current_token.op_type == OpType::PLUS ||
             self.current_token.op_type == OpType::MINUS {
+
             match self.current_token.op_type {
-            OpType::PLUS => {
-                self.eat(OpType::PLUS);
-                res += self.term();
+                OpType::PLUS => {
+                    self.eat(OpType::PLUS);
+                }
+                OpType::MINUS => {
+                    self.eat(OpType::MINUS);
+                }
+                _ => ()
             }
-            OpType::MINUS => {
-                self.eat(OpType::MINUS);
-                res -= self.term();
-            }
-            _ => ()
-            }
+
+            // we construct the tree from bottom to top
+            let op_type = self.current_token.op_type;
+            node = Rc::new(BinOp::new(op_type, node, self.term()));
         }
-        res
+        node
     }
 }
 
-
-fn main() {
-    loop {
-        print!("calc> ");
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-        let mut text = String::new();
-        std::io::stdin().read_line(&mut text).unwrap();
-        let lexer = Lexer::new(text);
-        let mut interpreter = Interpreter::new(lexer);
-        let res = interpreter.expr();
-        print!("{}\n", res);
+trait NodeVisitor {
+    fn visit(&self, node: Rc<dyn AstNode>) -> i32 {
+        0 
+        // TODO: try to invoke the right function according to the type of the node
     }
 }
+
+struct Interpreter {
+    parser: Parser,
+}
+impl NodeVisitor for Interpreter {}
+impl Interpreter {
+    fn new(parser: Parser) -> Interpreter {
+        Interpreter { parser }
+    }
+
+    fn visit_BinOp(&self, node: &dyn AstNode) -> i32 {
+        match node.get_op_type() {
+            OpType::PLUS => self.visit(node.get_left().unwrap()) + self.visit(node.get_right().unwrap()),
+            OpType::MINUS => self.visit(node.get_left().unwrap()) - self.visit(node.get_right().unwrap()),
+            OpType::MUL => self.visit(node.get_left().unwrap()) * self.visit(node.get_right().unwrap()),
+            OpType::DIV => self.visit(node.get_left().unwrap()) / self.visit(node.get_right().unwrap()),
+            _ => panic!("error syntax")
+        } 
+    }
+    fn visit_Num(&self, node: &dyn AstNode) -> i32 {
+        node.get_value().unwrap()
+    }
+}
+
